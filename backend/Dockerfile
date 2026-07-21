@@ -1,21 +1,39 @@
-FROM node:20-alpine
+# ---- Build Stage ----
+FROM node:20-alpine AS builder
 
-# Install build dependencies for native node modules (like bcrypt, sharp, etc.) if needed
+# Build tools required for native modules (bcrypt, sharp, etc.)
 RUN apk add --no-cache make gcc g++ python3
 
 WORKDIR /app
 
-# Copy dependency definitions
 COPY package*.json ./
-
-# Install all dependencies (production & development for local build compatibility)
 RUN npm ci
 
-# Copy rest of the backend codebase
-COPY . .
+# Remove dev dependencies but keep compiled native modules
+RUN npm prune --omit=dev && npm cache clean --force
 
-# Expose port (default Express backend port is 5000)
+# ---- Production Stage ----
+FROM node:20-alpine AS production
+
+RUN apk add --no-cache tini
+
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+WORKDIR /app
+
+# Copy production dependencies from builder
+COPY --from=builder /app/node_modules ./node_modules
+
+# Copy application source
+COPY --chown=nodejs:nodejs src/ ./src/
+COPY --chown=nodejs:nodejs package.json ./
+
+# Tini ensures signals (SIGTERM, SIGINT) are properly forwarded
+ENTRYPOINT ["/sbin/tini", "--"]
+
 EXPOSE 5000
 
-# Default command starts the REST API backend
-CMD ["node", "src/server.js"]
+USER nodejs
+
+CMD ["node", "--max-http-header-size=1000000", "src/server.js"]
