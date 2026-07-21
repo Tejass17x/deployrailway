@@ -1,0 +1,235 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Outfit:wght@300;400;500;600;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: "Inter", sans-serif;
+  --font-display: "Outfit", sans-serif;
+
+  /* Official ResearchConnect Color Palette */
+  --color-brand-blue: #2563EB;
+  --color-brand-blue-hover: #1D4ED8;
+  --color-brand-indigo: #4F46E5;
+  --color-brand-success: #22C55E;
+  --color-brand-orange: #F59E0B;
+  --color-brand-red: #EF4444;
+  --color-brand-bg: #F8FAFC;
+  --color-brand-card: #FFFFFF;
+  --color-brand-text-primary: #0F172A;
+  --color-brand-text-secondary: #475569;
+  --color-brand-border: #E2E8F0;
+  --color-brand-light-blue: #DBEAFE;
+  --color-brand-light-green: #DCFCE7;
+  --color-brand-light-orange: #FEF3C7;
+  --color-brand-light-purple: #EDE9FE;
+}
+
+/* ── Hide browser-native password reveal/clear icons ──
+   Prevents duplicate eye icon on top of our custom show/hide toggle
+   (Edge/IE inject their own; Chrome/Safari inject autofill decorations) */
+input[type="password"]::-ms-reveal,
+input[type="password"]::-ms-clear {
+  display: none;
+}
+input[type="password"]::-webkit-credentials-auto-fill-button,
+input[type="password"]::-webkit-textfield-decoration-container {
+  visibility: hidden;
+  display: none !important;
+}
+/* ── Shimmer animation for skeleton cards ── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+/* ── Range input thumb overrides (cross-browser) ── */
+input[type=range] {
+  -webkit-appearance: none;
+  appearance: none;
+  pointer-events: all;
+}
+input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid white;
+  cursor: pointer;
+  pointer-events: all;
+}
+input[type=range]::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid white;
+  cursor: pointer;
+  pointer-events: all;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    font-family: 'Inter', sans-serif;
+  }
+  
+  body {
+    background-color: #FFFFFF;
+    color: #0F172A;
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Outfit', sans-serif;
+  }
+}
+
+@layer utilities {
+  .bg-gradient-primary {
+    background: linear-gradient(135deg, #2563EB 0%, #4F46E5 100%);
+  }
+
+  .bg-gradient-success {
+    background: linear-gradient(135deg, #22C55E 0%, #10B981 100%);
+  }
+
+  .bg-gradient-hero {
+    background: radial-gradient(circle at top right, rgba(219, 234, 254, 0.4) 0%, rgba(248, 250, 252, 0) 60%);
+  }
+
+  .glass-card {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(226, 232, 240, 0.8);
+  }
+
+  .glass-nav {
+    background: rgba(248, 250, 252, 0.8);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid rgba(226, 232, 240, 0.8);
+  }
+
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #F8FAFC;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #CBD5E1;
+    border-radius: 4px;
+  }
+
+  /* Hide scrollbar for Chrome, Safari and Opera */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  /* Hide scrollbar for IE, Edge and Firefox */
+  .no-scrollbar {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+  }
+
+  /* ── Messaging UI ── */
+  .bubble-outbound-bg {
+    background: linear-gradient(135deg, #2563EB 0%, #4F46E5 100%);
+  }
+  .bubble-outbound {
+    border-radius: 16px 16px 2px 16px;
+  }
+  .bubble-inbound {
+    border-radius: 16px 16px 16px 2px;
+  }
+
+  .send-btn {
+    background: linear-gradient(135deg, #2563EB 0%, #4F46E5 100%);
+    box-shadow: 0 4px 12px -4px rgba(79, 70, 229, 0.4);
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .send-btn:hover {
+    transform: scale(1.05);
+    box-shadow: 0 6px 16px -4px rgba(79, 70, 229, 0.5);
+  }
+  .send-btn:active {
+    transform: scale(0.95);
+  }
+  .send-btn.cursor-not-allowed {
+    background: #E2E8F0;
+    box-shadow: none;
+    color: #94A3B8;
+  }
+  .send-btn.cursor-not-allowed:hover {
+    transform: none;
+  }
+
+  /* ── Messaging Animations ── */
+  @keyframes msgStaggerIn {
+    from { opacity: 0; transform: translateY(10px) scale(0.98); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .anim-msg-stagger-in {
+    animation: msgStaggerIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+    opacity: 0;
+  }
+
+  @keyframes gentlePulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  .anim-gentle-pulse {
+    animation: gentlePulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  @keyframes readText {
+    from { opacity: 0; transform: translateY(2px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .anim-read-text {
+    animation: readText 0.3s ease-out forwards;
+  }
+
+  @keyframes slideUpFade {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .anim-footer {
+    animation: slideUpFade 0.4s ease-out forwards;
+  }
+
+  .input-focus-glow:focus-within {
+    box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1);
+  }
+
+  @keyframes chipScaleIn {
+    from { opacity: 0; transform: scale(0.8); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  .anim-chip-scale {
+    animation: chipScaleIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+    opacity: 0;
+  }
+
+  .btn-icon-ripple {
+    position: relative;
+    overflow: hidden;
+  }
+  .btn-icon-ripple:active::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 100%;
+    height: 100%;
+    background: rgba(37, 99, 235, 0.2);
+    border-radius: 50%;
+    transform: translate(-50%, -50%) scale(0);
+    animation: ripple 0.4s ease-out forwards;
+  }
+  @keyframes ripple {
+    to { transform: translate(-50%, -50%) scale(2); opacity: 0; }
+  }
+}

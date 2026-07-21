@@ -1,0 +1,44 @@
+# Dependency directories
+node_modules/
+jspm_packages/
+
+# Build outputs
+dist/
+build/
+out/
+.next/
+
+# IDEs and editors
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+backend/logs/
+
+# Patch files
+*.patch
+
+# MiMoCode
+.mimocode/
+
+
+# Uploads
+backend/uploads/
+
+# DNS cache and temp config files
+backend/src/config/database/temp/
