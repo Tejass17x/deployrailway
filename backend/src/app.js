@@ -54,10 +54,11 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(cookieParser());
 
-// Serve static uploaded files
+// Serve static uploaded files (dev: ./uploads, prod: /tmp/uploads)
 const fs = require("fs");
 const path = require("path");
-const uploadsDir = path.join(process.cwd(), "uploads");
+const isProduction = process.env.NODE_ENV === "production";
+const uploadsDir = isProduction ? "/tmp/uploads" : path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
