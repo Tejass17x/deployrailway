@@ -43,6 +43,27 @@ const app = express();
 // Disable X-Powered-By
 app.disable("x-powered-by");
 
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+// Explicit whitelist for production cross-domain requests (Vercel frontend).
+// credentials: true is required so the httpOnly refreshToken cookie is accepted.
+const cors = require("cors");
+const ALLOWED_ORIGINS = [
+  "https://deployrailway-gray.vercel.app",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+];
+app.use(cors({
+  origin: (origin, cb) => {
+    // Allow server-to-server / mobile / tooling requests with no origin header
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error(`Origin "${origin}" not allowed by CORS policy.`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Request-Id", "X-Requested-With", "Accept", "Origin"],
+  exposedHeaders: ["X-Request-Id"],
+}));
+
 // Mount the API Gateway
 app.use(gatewayRouter);
 

@@ -3,9 +3,11 @@ import { toast } from 'react-hot-toast';
 import { store } from '../redux';
 import { updateToken, logoutSuccess } from '../redux/slices/authSlice';
 
-// Use the backend url with suffix 'api' since in backend all routes are defined with prefix 'api'
+// IMPORTANT: baseURL ends with /api (NOT /api/v1).
+// Service calls use /v1/auth/..., /v1/profile/... so the full path becomes
+// /api/v1/auth/... matching the backend route mount points exactly.
 const axiosInstance = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:5000/api/v1',
+  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:5000/api',
   timeout: 10000, // Enforce standard 10-second timeout
   withCredentials: true,
   headers: {
