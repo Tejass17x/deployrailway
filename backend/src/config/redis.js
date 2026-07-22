@@ -4,12 +4,14 @@ const logger = require('../common/logger/winston');
 // Use REDIS_URL to fetch from .env, fallback to localhost if missing
 const REDIS_URI = process.env.REDIS_URL || 'redis://localhost:6379';
 
+let isLimitExceeded = false;
+
 const isRedisConnError = (err) => {
   if (!err) return false;
   const msg = err.message || '';
   const name = err.name || '';
   const stack = err.stack || '';
-  
+
   return (
     msg.includes('max requests limit exceeded') ||
     msg.includes('TimeoutError') ||
@@ -33,16 +35,20 @@ const redisClient = createClient({
   url: REDIS_URI,
   socket: {
     reconnectStrategy: (retries) => {
-      // Stop retrying immediately if Redis is not available
-      if (isLimitExceeded || retries > 0) {
+      // If rate-limit exhausted, stop immediately
+      if (isLimitExceeded) {
         return false;
       }
-      return 1000;
+      // Exponential backoff: 1s, 2s, 4s, 8s, then stop after 5 retries
+      if (retries >= 5) {
+        isLimitExceeded = true;
+        logger.warn('[REDIS] Max reconnection attempts reached. Running in fallback mode.');
+        return false;
+      }
+      return Math.min(Math.pow(2, retries) * 1000, 10000);
     }
   }
 });
-
-let isLimitExceeded = false;
 
 redisClient.on('error', (err) => {
   if (isRedisConnError(err)) {

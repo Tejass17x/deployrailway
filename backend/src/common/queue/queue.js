@@ -9,16 +9,21 @@ const REDIS_URI = process.env.REDIS_URL || 'redis://localhost:6379';
 let connection = null;
 let redisAvailable = false;
 
+// Keep track of retries across restarts
+let redisRetryCount = 0;
+
 try {
   const options = {
     maxRetriesPerRequest: null, // Required by BullMQ
     enableOfflineQueue: false, // Don't queue commands when disconnected
     retryStrategy: (times) => {
-      // Stop retrying after first failure - Redis is optional
-      if (times > 1) {
+      // Allow up to 5 retries with exponential backoff, then stop
+      if (redisRetryCount >= 5) {
+        logger.warn('[BULLMQ] Redis unavailable after 5 retries. Queue jobs will be processed inline.');
         return null; // Stop reconnecting
       }
-      return 1000;
+      redisRetryCount = times;
+      return Math.min(Math.pow(2, times) * 1000, 10000);
     }
   };
   connection = new IORedis(REDIS_URI, options);
