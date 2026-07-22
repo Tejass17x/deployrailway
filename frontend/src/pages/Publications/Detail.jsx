@@ -38,7 +38,7 @@ const PublicationDetails = () => {
     // Log download event
     api.post(`/publications/${id}/analytics/log`, { eventType: 'downloads' }).catch(() => {});
     if (publication?.pdfUrl) {
-      window.open(publication.pdfUrl.startsWith('/') ? `${api.defaults.baseURL || 'http://localhost:5000'}${publication.pdfUrl}` : publication.pdfUrl, '_blank');
+      window.open(publication.pdfUrl.startsWith('/') ? `${api.defaults.baseURL}${publication.pdfUrl}` : publication.pdfUrl, '_blank');
     }
   };
 

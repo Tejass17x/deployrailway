@@ -5,7 +5,7 @@ import { updateToken, logoutSuccess } from '../redux/slices/authSlice';
 
 // Use the backend url with suffix 'api' since in backend all routes are defined with prefix 'api'
 const axiosInstance = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api'  || '/api', 
+  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:5000/api/v1',
   timeout: 10000, // Enforce standard 10-second timeout
   withCredentials: true,
   headers: {
