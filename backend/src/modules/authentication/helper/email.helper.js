@@ -272,19 +272,58 @@ const securityTipsBlock = () => `
 `;
 
 const sendEmail = async (to, subject, html) => {
+  const text = htmlToPlainText(html);
+
+  // 1. Try the BullMQ queue path (requires Redis). In production with
+  //    Redis this is preferred because the dedicated worker retries on
+  //    failure and doesn't block the HTTP request.
+  const jobId = await queue.enqueue('email', { to, subject, html, text });
+  if (jobId) {
+    logger.info(`[EMAIL CLIENT] Enqueued email job ${jobId} to ${to} for subject: ${subject}`);
+    return true;
+  }
+
+  // 2. Queue unavailable (Redis down or not configured) — send directly.
+  logger.warn(`[EMAIL CLIENT] Queue unavailable, sending email directly to ${to}`);
+
+  // In development, always log the email body so the developer can grab OTPs
+  // without a working mail server.
+  if (process.env.NODE_ENV !== 'production') {
+    logger.info(`[EMAIL DEV] --- BEGIN MOCK EMAIL ---`);
+    logger.info(`[EMAIL DEV] To: ${to}`);
+    logger.info(`[EMAIL DEV] Subject: ${subject}`);
+    logger.info(`[EMAIL DEV] Body (text): ${text.substring(0, 2000)}`);
+    logger.info(`[EMAIL DEV] --- END MOCK EMAIL ---`);
+  }
+
+  // Only attempt direct SMTP send when credentials are configured.
+  if (!env.email.user || !env.email.pass) {
+    logger.warn(`[EMAIL CLIENT] No EMAIL_USER / EMAIL_PASS configured — email NOT sent to ${to}`);
+    return false;
+  }
+
   try {
-    const jobData = {
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: env.email.user,
+        pass: env.email.pass
+      }
+    });
+
+    const mailOptions = {
+      from: `"Research Connect" <${env.email.user}>`,
       to,
       subject,
       html,
-      text: htmlToPlainText(html)
+      text
     };
 
-    await queue.enqueue('email', jobData);
-    logger.info(`[EMAIL CLIENT] Enqueued email job to ${to} for subject: ${subject}`);
+    const info = await transporter.sendMail(mailOptions);
+    logger.info(`[EMAIL CLIENT] Direct SMTP sent to ${to}: ${info.messageId}`);
     return true;
   } catch (error) {
-    logger.error(`[EMAIL CLIENT ERROR] Failed to enqueue email to ${to}: ${error.message}`, error);
+    logger.error(`[EMAIL CLIENT ERROR] Direct SMTP failed for ${to}: ${error.message}`, error);
     return false;
   }
 };
