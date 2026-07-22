@@ -17,20 +17,30 @@ const consoleFormat = winston.format.combine(
   })
 );
 
-const logDirectory = path.join(process.cwd(), 'logs');
+const isProduction = process.env.NODE_ENV === 'production';
+
+// In production (Railway, Heroku, etc.), use /tmp/logs which is always writable.
+// In development, use a local 'logs' folder in the project root.
+const logDirectory = isProduction
+  ? '/tmp/logs'
+  : path.join(process.cwd(), 'logs');
 
 const createCategoryLogger = (categoryName) => {
-  const isProduction = process.env.NODE_ENV === 'production';
   const defaultLevel = process.env.LOG_LEVEL || (isProduction ? 'info' : 'debug');
-  return winston.createLogger({
-    level: defaultLevel,
-    format: logFormat,
-    defaultMeta: { service: 'research-connect', category: categoryName },
-    transports: [
-      new winston.transports.Console({
-        format: consoleFormat,
-        level: defaultLevel
-      }),
+
+  // Every logger always gets a Console transport (stdout is captured by the platform)
+  const transports = [
+    new winston.transports.Console({
+      format: consoleFormat,
+      level: defaultLevel
+    })
+  ];
+
+  // Only add file transports in production if /tmp is available (always is on
+  // Railway / Heroku / Render, but guard defensively). In development, always
+  // write file logs for local debugging.
+  if (!isProduction || process.env.LOG_DIR !== 'false') {
+    transports.push(
       new winston.transports.DailyRotateFile({
         filename: path.join(logDirectory, `${categoryName}-%DATE%.log`),
         datePattern: 'YYYY-MM-DD',
@@ -38,9 +48,12 @@ const createCategoryLogger = (categoryName) => {
         maxSize: '20m',
         maxFiles: '14d',
         format: logFormat
-      }),
-      // Re-route errors from any category to error file as well
-      ...(categoryName !== 'error' ? [
+      })
+    );
+
+    // Re-route errors from any category to a shared error file as well
+    if (categoryName !== 'error') {
+      transports.push(
         new winston.transports.DailyRotateFile({
           filename: path.join(logDirectory, 'error-%DATE%.log'),
           datePattern: 'YYYY-MM-DD',
@@ -50,8 +63,15 @@ const createCategoryLogger = (categoryName) => {
           level: 'error',
           format: logFormat
         })
-      ] : [])
-    ]
+      );
+    }
+  }
+
+  return winston.createLogger({
+    level: defaultLevel,
+    format: logFormat,
+    defaultMeta: { service: 'research-connect', category: categoryName },
+    transports
   });
 };
 
