@@ -61,8 +61,7 @@ const emailWorkerHandler = async (job) => {
     socketTimeout: 15000,
     tls: {
       rejectUnauthorized: false
-    },
-    localAddress: '0.0.0.0'
+    }
   });
 
   const mailOptions = {

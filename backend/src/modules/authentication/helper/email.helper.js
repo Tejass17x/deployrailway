@@ -37,8 +37,7 @@ const transporter = nodemailer.createTransport({
   greetingTimeout: 5000,
   tls: {
     rejectUnauthorized: false
-  },
-  localAddress: '0.0.0.0'
+  }
 });
 
 // Update these to match your real branding / support details
