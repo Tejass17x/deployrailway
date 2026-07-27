@@ -1,3 +1,11 @@
+const dns = require("dns");
+
+// Force all network connections in this process to prefer IPv4 over IPv6.
+// Railway's network cannot route IPv6 to Gmail SMTP, and without this,
+// Node.js may resolve smtp.gmail.com to an IPv6 address even when the
+// nodemailer transport has family: 4.
+dns.setDefaultResultOrder("ipv4first");
+
 const express = require("express");
 const compression = require("compression");
 const cookieParser = require("cookie-parser");

@@ -5,31 +5,18 @@ const env = require('../config/environment');
 
 /**
  * 1. Email Worker Handler
- * Processes transactional and notification emails.
- * Supports Resend API and falls back to Nodemailer SMTP.
+ * Processes transactional and notification emails via Gmail SMTP.
+ *
+ * Railway cannot route IPv6 → Gmail SMTP, so the transporter forces IPv4
+ * (family: 4) and all timeouts are set tight so a slow/broken connection
+ * fails fast rather than hanging the worker indefinitely.
  */
 const emailWorkerHandler = async (job) => {
   logger.info(`[Email Worker] Processing mail dispatch to ${job.to}`);
-  
-  if (env.email.resendKey) {
-    try {
-      const axios = require('axios');
-      await axios.post('https://api.resend.com/emails', {
-        from: `Research Connect <onboarding@resend.dev>`,
-        to: job.to,
-        subject: job.subject,
-        html: job.html
-      }, {
-        headers: {
-          'Authorization': `Bearer ${env.email.resendKey}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      logger.info(`[Email Worker] Resend API successfully sent mail to ${job.to}`);
-      return;
-    } catch (err) {
-      logger.error(`[Email Worker] Resend API failed: ${err.message}. Falling back to SMTP.`);
-    }
+
+  if (!env.email.user || !env.email.pass) {
+    logger.warn(`[Email Worker] EMAIL_USER / EMAIL_PASS not configured — cannot send to ${job.to}`);
+    return;
   }
 
   const transporter = nodemailer.createTransport({
@@ -38,9 +25,13 @@ const emailWorkerHandler = async (job) => {
     secure: true,
     auth: {
       user: env.email.user,
-      pass: env.email.pass
+      pass: env.email.pass,
     },
-    family: 4
+    family: 4,
+    // Fail fast — don't let a slow SMTP handshake hang the worker
+    connectionTimeout: 8000,
+    greetingTimeout: 8000,
+    socketTimeout: 15000,
   });
 
   const mailOptions = {
@@ -48,11 +39,21 @@ const emailWorkerHandler = async (job) => {
     to: job.to,
     subject: job.subject,
     html: job.html,
-    text: job.text
+    text: job.text,
   };
 
-  await transporter.sendMail(mailOptions);
-  logger.info(`[Email Worker] Nodemailer SMTP successfully sent mail to ${job.to}`);
+  try {
+    const info = await transporter.sendMail(mailOptions);
+    logger.info(`[Email Worker] SMTP successfully sent mail to ${job.to}: ${info.messageId}`);
+  } catch (error) {
+    logger.error(
+      `[Email Worker] SMTP failed for ${job.to}: ${error.message}`,
+      { code: error.code, command: error.command, stack: error.stack?.split('\n')[0] }
+    );
+    // Let the error propagate so BullMQ retries the job
+    // (queue defaults: 5 attempts, exponential backoff starting at 2s)
+    throw error;
+  }
 };
 
 /**
