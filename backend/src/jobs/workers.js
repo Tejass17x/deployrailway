@@ -1,4 +1,3 @@
-const { resolve4 } = require('dns').promises;
 const queue = require('../common/queue/queue');
 const logger = require('../common/logger/winston');
 const nodemailer = require('nodemailer');
@@ -15,13 +14,9 @@ const env = require('../config/environment');
  * Fixes applied:
  *   - Port 587 with STARTTLS instead of port 465 SMTPS (587 is the standard
  *     submission port and is rarely blocked by cloud providers).
- *   - Manually resolves smtp.gmail.com to a raw IPv4 address via
- *     dns.resolve4() BEFORE creating the transport.  Nodemailer's internal
- *     DNS (including family: 4 and the lookup option) is unreliable when
- *     the system resolver is IPv6-native — passing the IP directly as
- *     host bypasses its DNS completely.
- *   - tls.servername set to smtp.gmail.com so the TLS handshake uses the
- *     correct hostname for certificate validation.
+ *   - family: 4 forces Node.js to resolve smtp.gmail.com to IPv4 only,
+ *     preventing the ENETUNREACH errors caused by Railway's IPv6-native
+ *     DNS resolver (fd12::10).
  *   - Tight timeouts so a broken connection fails fast instead of hanging
  *     the BullMQ worker forever.
  */
@@ -33,22 +28,8 @@ const emailWorkerHandler = async (job) => {
     return;
   }
 
-  // Resolve smtp.gmail.com to a raw IPv4 address.
-  // Railway's DNS is IPv6-native (fd12::10) and returns AAAA records
-  // that are unreachable.  We resolve4() to get only A records.
-  let smtpHost = 'smtp.gmail.com';
-  try {
-    const [ipv4] = await resolve4('smtp.gmail.com');
-    smtpHost = ipv4;
-    logger.info(`[Email Worker] Resolved smtp.gmail.com → ${ipv4} (IPv4)`);
-  } catch (dnsErr) {
-    logger.warn(`[Email Worker] DNS resolve4 failed: ${dnsErr.message}. Using hostname directly.`);
-  }
-
   const transporter = nodemailer.createTransport({
-    // Use the raw IPv4 address as host to completely bypass nodemailer's
-    // DNS resolution — nothing between us and Gmail can pick IPv6.
-    host: smtpHost,
+    host: 'smtp.gmail.com',
     port: 587,
     secure: false,
     requireTLS: true,
@@ -56,10 +37,7 @@ const emailWorkerHandler = async (job) => {
       user: env.email.user,
       pass: env.email.pass,
     },
-    tls: {
-      // SNI hostname so Gmail's TLS certificate validates correctly
-      servername: 'smtp.gmail.com',
-    },
+    family: 4,
     connectionTimeout: 8000,
     greetingTimeout: 8000,
     socketTimeout: 15000,

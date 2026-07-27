@@ -5,8 +5,9 @@ const queue = require('../../../common/queue/queue');
 
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
-  port: 465,
-  secure: true,
+  port: 587,
+  secure: false,
+  requireTLS: true,
   auth: {
     user: env.email.user,
     pass: env.email.pass
