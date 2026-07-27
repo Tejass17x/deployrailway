@@ -1,4 +1,7 @@
 const dns = require('dns');
+// GLOBALLY FORCE IPv4 FOR NODE.JS v18+ TO FIX RAILWAY ENETUNREACH
+dns.setDefaultResultOrder('ipv4first');
+
 const nodemailer = require('nodemailer');
 const env = require('../../../config/environment');
 const logger = require('../../../common/logger/winston');
@@ -23,7 +26,10 @@ const transporter = nodemailer.createTransport({
   // Fail fast — don't hang indefinitely on SMTP connection
   connectionTimeout: 5000,
   // Timeout for sending the email itself
-  greetingTimeout: 5000
+  greetingTimeout: 5000,
+  tls: {
+    rejectUnauthorized: false
+  }
 });
 
 // Update these to match your real branding / support details

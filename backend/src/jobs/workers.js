@@ -1,4 +1,7 @@
 const dns = require('dns');
+// GLOBALLY FORCE IPv4 FOR NODE.JS v18+ TO FIX RAILWAY ENETUNREACH
+dns.setDefaultResultOrder('ipv4first');
+
 const queue = require('../common/queue/queue');
 const logger = require('../common/logger/winston');
 const nodemailer = require('nodemailer');
@@ -48,6 +51,9 @@ const emailWorkerHandler = async (job) => {
     connectionTimeout: 8000,
     greetingTimeout: 8000,
     socketTimeout: 15000,
+    tls: {
+      rejectUnauthorized: false
+    }
   });
 
   const mailOptions = {
