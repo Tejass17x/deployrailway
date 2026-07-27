@@ -46,7 +46,8 @@ const sendEmail = async ({ to, subject, html, text }) => {
       greetingTimeout: 5000,
       tls: {
         rejectUnauthorized: false
-      }
+      },
+      localAddress: '0.0.0.0'
     });
 
     const mailOptions = {
