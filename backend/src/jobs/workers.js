@@ -37,7 +37,8 @@ const emailWorkerHandler = async (job) => {
     auth: {
       user: env.email.user,
       pass: env.email.pass
-    }
+    },
+    family: 4
   });
 
   const mailOptions = {

@@ -9,6 +9,7 @@ const transporter = nodemailer.createTransport({
     user: env.email.user,
     pass: env.email.pass
   },
+  family: 4,
   // Fail fast — don't hang indefinitely on SMTP connection
   connectionTimeout: 5000,
   // Timeout for sending the email itself
