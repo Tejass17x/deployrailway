@@ -154,7 +154,7 @@ Expected: `{"status":"healthy","gemini_enabled":true}`
 
 | Variable             | Description                                    | Example Value                                    |
 |----------------------|------------------------------------------------|--------------------------------------------------|
-| `VITE_API_URL`       | Base URL for the Railway backend API           | `https://backend-xxxxxxxx.up.railway.app/api/v1` |
+| `VITE_API_URL`       | Base URL for the Railway backend API (ends with `/api` — the client appends `/v1` internally) | `https://backend-xxxxxxxx.up.railway.app/api` |
 
 This tells the frontend Axios client to point all API calls to your Railway backend.
 

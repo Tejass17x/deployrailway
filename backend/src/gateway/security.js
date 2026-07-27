@@ -36,11 +36,13 @@ const configureCors = () => {
   return cors({
     origin: (origin, callback) => {
       // Allow mobile app requests, curl, postman or internal requests with undefined origin
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error(`Origin ${origin} not allowed by CORS gateway policy.`));
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      // In development, allow any localhost:<port> (handles Vite port fallbacks)
+      if (env.nodeEnv !== 'production' && /^https?:\/\/localhost:\d+$/i.test(origin)) {
+        return callback(null, true);
       }
+      callback(new Error(`Origin ${origin} not allowed by CORS gateway policy.`));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],

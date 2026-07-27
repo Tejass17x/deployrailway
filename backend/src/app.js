@@ -55,7 +55,12 @@ const ALLOWED_ORIGINS = [
 app.use(cors({
   origin: (origin, cb) => {
     // Allow server-to-server / mobile / tooling requests with no origin header
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    if (!origin) return cb(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    // In development, allow any localhost:<port> (handles Vite port fallbacks)
+    if (process.env.NODE_ENV !== 'production' && /^https?:\/\/localhost:\d+$/i.test(origin)) {
+      return cb(null, true);
+    }
     cb(new Error(`Origin "${origin}" not allowed by CORS policy.`));
   },
   credentials: true,

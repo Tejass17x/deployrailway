@@ -5,6 +5,10 @@ const logger = require('../logger/winston');
 // Redis URL fallback to localhost
 const REDIS_URI = process.env.REDIS_URL || 'redis://localhost:6379';
 
+// Upstash requires TLS for all connections, even on redis:// scheme.
+const isUpstash = REDIS_URI.includes('upstash.io');
+const useTls = isUpstash || process.env.REDIS_TLS === 'true';
+
 // ioredis connection instance with graceful fallback
 let connection = null;
 let redisAvailable = false;
@@ -16,6 +20,7 @@ try {
   const options = {
     maxRetriesPerRequest: null, // Required by BullMQ
     enableOfflineQueue: false, // Don't queue commands when disconnected
+    tls: useTls ? {} : undefined,
     retryStrategy: (times) => {
       // Allow up to 5 retries with exponential backoff, then stop
       if (redisRetryCount >= 5) {

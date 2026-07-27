@@ -4,6 +4,11 @@ const logger = require('../common/logger/winston');
 // Use REDIS_URL to fetch from .env, fallback to localhost if missing
 const REDIS_URI = process.env.REDIS_URL || 'redis://localhost:6379';
 
+// Upstash requires TLS for all connections, even on redis:// scheme.
+// If the URL doesn't use rediss://, inject TLS socket options.
+const isUpstash = REDIS_URI.includes('upstash.io');
+const useTls = isUpstash || process.env.REDIS_TLS === 'true';
+
 let isLimitExceeded = false;
 
 const isRedisConnError = (err) => {
@@ -34,6 +39,7 @@ const isRedisConnError = (err) => {
 const redisClient = createClient({
   url: REDIS_URI,
   socket: {
+    tls: useTls,
     reconnectStrategy: (retries) => {
       // If rate-limit exhausted, stop immediately
       if (isLimitExceeded) {
