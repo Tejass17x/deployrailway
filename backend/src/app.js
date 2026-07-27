@@ -9,6 +9,7 @@ const responseFormatterMiddleware = require("./common/middlewares/responseFormat
 const securityMiddlewares = require("./common/middlewares/security.middleware");
 const notFoundMiddleware = require("./common/middlewares/notFound.middleware");
 const errorHandlerMiddleware = require("./common/middlewares/errorHandler.middleware");
+const logger = require("./common/logger/winston");
 
 // Import Modules
 const landingModule = require("./modules/landing");
@@ -90,8 +91,38 @@ if (!fs.existsSync(uploadsDir)) {
 }
 app.use("/uploads", express.static(uploadsDir));
 
+// Request timeout middleware — prevents indefinite hangs from external services
+// (Redis, MongoDB, SMTP, etc.) that could cause Vercel's 10-second timeout.
+// This sets a hard ceiling on request processing time.
+const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS, 10) || 15000; // 15s default
+const requestTimeout = (req, res, next) => {
+  // Set a timeout that fires if the request takes too long
+  const timer = setTimeout(() => {
+    if (!res.headersSent) {
+      logger.error(`Request timeout after ${REQUEST_TIMEOUT_MS}ms: ${req.method} ${req.originalUrl}`, {
+        requestId: req.id,
+        ip: req.ip
+      });
+      res.status(503).json({
+        success: false,
+        message: 'Request timed out. The server is taking too long to respond. Please try again.',
+        error: { code: 'REQUEST_TIMEOUT' }
+      });
+    }
+  }, REQUEST_TIMEOUT_MS);
+
+  // Clear the timeout when the response finishes
+  res.on('finish', () => clearTimeout(timer));
+  res.on('close', () => clearTimeout(timer));
+
+  next();
+};
+
 // Request ID tracing
 app.use(requestIdMiddleware);
+
+// Request timeout (must be after requestId so we have req.id in logs)
+app.use(requestTimeout);
 
 // Request logger
 app.use(loggerMiddleware);

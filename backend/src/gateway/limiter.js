@@ -26,14 +26,30 @@ const rateLimiter = (options = {}) => {
     }
 
     try {
-      const current = await redisClient.incr(key);
+      // Wrap Redis commands with a timeout so a slow Redis doesn't hang the request
+      const current = await Promise.race([
+        redisClient.incr(key),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Redis rate limit timeout')), 3000)
+        )
+      ]);
 
       if (current === 1) {
         // Set expiry for window on first increment
-        await redisClient.expire(key, Math.ceil(windowMs / 1000));
+        await Promise.race([
+          redisClient.expire(key, Math.ceil(windowMs / 1000)),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Redis rate limit timeout')), 3000)
+          )
+        ]);
       }
 
-      const ttl = await redisClient.ttl(key);
+      const ttl = await Promise.race([
+        redisClient.ttl(key),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Redis rate limit timeout')), 3000)
+        )
+      ]);
 
       res.setHeader('X-RateLimit-Limit', max);
       res.setHeader('X-RateLimit-Remaining', Math.max(0, max - current));

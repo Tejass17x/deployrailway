@@ -20,7 +20,13 @@ class FallbackStore {
         const { RedisStore } = require('rate-limit-redis');
         this.redisStore = new RedisStore({
           sendCommand: async (...args) => {
-            return await redisClient.sendCommand(args);
+            // Wrap Redis commands with a timeout so a slow Redis doesn't hang the request
+            return await Promise.race([
+              redisClient.sendCommand(args),
+              new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Redis command timeout')), 3000)
+              )
+            ]);
           },
           prefix: `rl:${this.prefix}:`
         });
@@ -39,7 +45,12 @@ class FallbackStore {
       return await this.memoryStore.increment(key);
     }
     try {
-      return await this.redisStore.increment(key);
+      return await Promise.race([
+        this.redisStore.increment(key),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Redis rate limit command timeout')), 3000)
+        )
+      ]);
     } catch (err) {
       console.warn(`Redis rate limit store error for prefix "${this.prefix}", falling back to memory:`, err.message);
       this.useMemory = true;
@@ -55,7 +66,12 @@ class FallbackStore {
       return;
     }
     try {
-      return await this.redisStore.decrement(key);
+      return await Promise.race([
+        this.redisStore.decrement(key),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Redis rate limit command timeout')), 3000)
+        )
+      ]);
     } catch (err) {
       this.useMemory = true;
       if (typeof this.memoryStore.decrement === 'function') {
@@ -69,7 +85,12 @@ class FallbackStore {
       return await this.memoryStore.resetKey(key);
     }
     try {
-      return await this.redisStore.resetKey(key);
+      return await Promise.race([
+        this.redisStore.resetKey(key),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Redis rate limit command timeout')), 3000)
+        )
+      ]);
     } catch (err) {
       this.useMemory = true;
       return await this.memoryStore.resetKey(key);
@@ -96,7 +117,7 @@ const globalLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   store: createStore('global'),
-  passOnStoreError: true,
+  passOnStoreError: true, // Bypass rate limiter if Redis store fails
   message: createMessage('Too many requests from this IP. Please try again after 15 minutes.')
 });
 
@@ -106,7 +127,7 @@ const authLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   store: createStore('auth'),
-  passOnStoreError: true,
+  passOnStoreError: true, // Bypass rate limiter if Redis store fails
   message: createMessage('Too many authentication attempts. Please try again after 15 minutes.', 'AUTH_BRUTE_FORCE')
 });
 
@@ -117,7 +138,7 @@ const otpLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   store: createStore('otp'),
-  passOnStoreError: true,
+  passOnStoreError: true, // Bypass rate limiter if Redis store fails
   message: createMessage('Too many OTP requests. Please wait 5 minutes before requesting again.', 'OTP_THROTTLED')
 });
 
@@ -128,7 +149,7 @@ const verifyOtpLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   store: createStore('verify_otp'),
-  passOnStoreError: true,
+  passOnStoreError: true, // Bypass rate limiter if Redis store fails
   message: createMessage('Too many verification attempts. Please wait a few minutes and try again.', 'OTP_THROTTLED')
 });
 
@@ -138,7 +159,7 @@ const searchLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   store: createStore('search'),
-  passOnStoreError: true,
+  passOnStoreError: true, // Bypass rate limiter if Redis store fails
   message: createMessage('Too many search requests. Please slow down.', 'SEARCH_THROTTLED')
 });
 
@@ -148,7 +169,7 @@ const scholarSyncLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   store: createStore('scholar_sync'),
-  passOnStoreError: true,
+  passOnStoreError: true, // Bypass rate limiter if Redis store fails
   message: createMessage('Too many sync requests. Please wait a moment and try again.', 'SYNC_THROTTLED')
 });
 
@@ -158,7 +179,7 @@ const uploadLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
   store: createStore('upload'),
-  passOnStoreError: true,
+  passOnStoreError: true, // Bypass rate limiter if Redis store fails
   message: createMessage('Too many file uploads from this IP. Please try again after 15 minutes.', 'UPLOAD_THROTTLED')
 });
 

@@ -13,6 +13,18 @@ const Notification = require('../../../models/Notification');
 const logger = require('../../../common/logger/winston');
 const emailHelper = require('../helper/email.helper');
 
+// ─── Timeout Wrapper ─────────────────────────────────────────────────────────
+// Wraps a promise with a timeout so that if an external service (Redis, SMTP,
+// etc.) hangs, the operation fails fast instead of blocking indefinitely.
+const withTimeout = async (promise, ms = 5000, operation = 'operation') => {
+  return await Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout during ${operation}`)), ms)
+    )
+  ]);
+};
+
 class AuthService {
   // Generate a random 6-digit numeric OTP
   _generateOtp() {
@@ -23,7 +35,7 @@ class AuthService {
   async _logSecurityEvent(userId, email, event, description, clientInfo = {}) {
     try {
       const { ip = 'Unknown', userAgent = '', device = 'Unknown', browser = 'Unknown', os = 'Unknown' } = clientInfo;
-      
+
       await SecurityLog.create({
         userId,
         email,
@@ -46,12 +58,18 @@ class AuthService {
   async _checkOtpCooldown(email, purpose) {
     const { cacheService } = require('../../../cache/cache.service');
     const cooldownKey = `otp_cooldown:${email.toLowerCase()}:${purpose}`;
-    const exists = await cacheService.get(cooldownKey);
-    if (exists) {
-      const timeDiff = (Date.now() - exists.createdAt) / 1000;
-      if (timeDiff < 60) {
-        throw new AppError(`Please wait ${Math.ceil(60 - timeDiff)} seconds before requesting a new code.`, 429, 'COOLDOWN_ERROR');
+    try {
+      const exists = await withTimeout(cacheService.get(cooldownKey), 3000, 'OTP cooldown check');
+      if (exists) {
+        const timeDiff = (Date.now() - exists.createdAt) / 1000;
+        if (timeDiff < 60) {
+          throw new AppError(`Please wait ${Math.ceil(60 - timeDiff)} seconds before requesting a new code.`, 429, 'COOLDOWN_ERROR');
+        }
       }
+    } catch (err) {
+      // If Redis is down, don't block OTP sending — just skip cooldown check
+      if (err.statusCode) throw err;
+      logger.warn(`Redis cooldown check failed for ${email}, proceeding without cooldown: ${err.message}`);
     }
   }
 
@@ -143,19 +161,32 @@ class AuthService {
 
     const { cacheService } = require('../../../cache/cache.service');
     const otpKey = `otp:${email.toLowerCase()}:registration`;
-    await cacheService.set(otpKey, {
-      email: email.toLowerCase(),
-      otp: hashedOtp,
-      purpose: 'registration',
-      attempts: 0,
-      verified: false
-    }, 600); // 10 minutes
+    try {
+      await withTimeout(cacheService.set(otpKey, {
+        email: email.toLowerCase(),
+        otp: hashedOtp,
+        purpose: 'registration',
+        attempts: 0,
+        verified: false
+      }, 600), 3000, 'OTP cache set');
+    } catch (err) {
+      logger.warn(`Redis OTP cache set failed during registration: ${err.message}`);
+    }
 
     const cooldownKey = `otp_cooldown:${email.toLowerCase()}:registration`;
-    await cacheService.set(cooldownKey, { createdAt: Date.now() }, 60);
+    try {
+      await withTimeout(cacheService.set(cooldownKey, { createdAt: Date.now() }, 60), 3000, 'OTP cooldown set');
+    } catch (err) {
+      logger.warn(`Redis OTP cooldown set failed during registration: ${err.message}`);
+    }
 
-    // Send verification email
-    await emailHelper.sendRegistrationOtp(email.toLowerCase(), otpCode);
+    // Send verification email — wrapped in try/catch so email failure doesn't block registration
+    try {
+      await withTimeout(emailHelper.sendRegistrationOtp(email.toLowerCase(), otpCode), 5000, 'registration OTP email');
+    } catch (err) {
+      logger.error(`Failed to send registration OTP email to ${email}: ${err.message}`);
+      // Don't throw — registration can still proceed; user can request OTP resend
+    }
 
     await this._logSecurityEvent(user._id, email, 'REGISTER_PENDING', 'User registration initialized, OTP code sent.', clientInfo);
 
@@ -183,20 +214,33 @@ class AuthService {
 
     const { cacheService } = require('../../../cache/cache.service');
     const otpKey = `otp:${email.toLowerCase()}:registration`;
-    await cacheService.set(otpKey, {
-      email: email.toLowerCase(),
-      otp: hashedOtp,
-      purpose: 'registration',
-      attempts: 0,
-      verified: false
-    }, 600);
+    try {
+      await withTimeout(cacheService.set(otpKey, {
+        email: email.toLowerCase(),
+        otp: hashedOtp,
+        purpose: 'registration',
+        attempts: 0,
+        verified: false
+      }, 600), 3000, 'OTP cache set');
+    } catch (err) {
+      logger.warn(`Redis OTP cache set failed during resend: ${err.message}`);
+    }
 
     const cooldownKey = `otp_cooldown:${email.toLowerCase()}:registration`;
-    await cacheService.set(cooldownKey, { createdAt: Date.now() }, 60);
+    try {
+      await withTimeout(cacheService.set(cooldownKey, { createdAt: Date.now() }, 60), 3000, 'OTP cooldown set');
+    } catch (err) {
+      logger.warn(`Redis OTP cooldown set failed during resend: ${err.message}`);
+    }
 
-    await emailHelper.sendRegistrationOtp(email.toLowerCase(), otpCode);
+    try {
+      await withTimeout(emailHelper.sendRegistrationOtp(email.toLowerCase(), otpCode), 5000, 'registration OTP email');
+    } catch (err) {
+      logger.error(`Failed to send registration OTP email to ${email}: ${err.message}`);
+    }
+
     await this._logSecurityEvent(user._id, email, 'REGISTER_OTP_RESENT', 'Registration OTP resent.', clientInfo);
-    
+
     return { success: true };
   }
 
@@ -209,7 +253,13 @@ class AuthService {
 
     const { cacheService } = require('../../../cache/cache.service');
     const otpKey = `otp:${email.toLowerCase()}:registration`;
-    const otpRecord = await cacheService.get(otpKey);
+    let otpRecord;
+    try {
+      otpRecord = await withTimeout(cacheService.get(otpKey), 3000, 'OTP cache get');
+    } catch (err) {
+      logger.warn(`Redis OTP cache get failed during verification: ${err.message}`);
+      throw new AppError('Unable to verify OTP. Please try again.', 500, 'REDIS_ERROR');
+    }
 
     if (!otpRecord || otpRecord.verified) {
       throw new AppError('No active OTP found. Please request a new one.', 400, 'INVALID_OTP');
@@ -224,12 +274,20 @@ class AuthService {
     const isOtpMatch = await bcrypt.compare(otpCode, otpRecord.otp);
     if (!isOtpMatch) {
       otpRecord.attempts += 1;
-      await cacheService.set(otpKey, otpRecord, 600);
+      try {
+        await withTimeout(cacheService.set(otpKey, otpRecord, 600), 3000, 'OTP cache update');
+      } catch (err) {
+        logger.warn(`Redis OTP cache update failed: ${err.message}`);
+      }
       throw new AppError('Invalid verification code. Please try again.', 400, 'INVALID_OTP');
     }
 
     // Delete OTP from Redis
-    await cacheService.del(otpKey);
+    try {
+      await withTimeout(cacheService.del(otpKey), 3000, 'OTP cache delete');
+    } catch (err) {
+      logger.warn(`Redis OTP cache delete failed: ${err.message}`);
+    }
 
     // Activate User
     user.status = 'active';
@@ -271,7 +329,7 @@ class AuthService {
     } catch (err) {
       logger.error('Lookup upsert failed during registration: ' + err.message);
     }
-    
+
     // Dynamically load profileService to avoid circular dependency
     try {
       const profileService = require('../../profile/service/profile.service');
@@ -308,7 +366,12 @@ class AuthService {
       active: true
     });
 
-    await cacheService.set(`session:${session._id}`, session, 2592000); // Cache for 30 days
+    const { cacheService: cs } = require('../../../cache/cache.service');
+    try {
+      await withTimeout(cs.set(`session:${session._id}`, session, 2592000), 3000, 'session cache set');
+    } catch (err) {
+      logger.warn(`Redis session cache set failed: ${err.message}`);
+    }
 
     const accessToken = signAccessToken({ userId: user._id, role: user.role, sessionId: session._id });
     const refreshTokenValue = signRefreshToken({ userId: user._id, sessionId: session._id });
@@ -326,8 +389,12 @@ class AuthService {
       expiresAt: refreshExpiry
     });
 
-    // Send Welcome Email
-    await emailHelper.sendWelcomeEmail(user.email, user.firstName);
+    // Send Welcome Email — wrapped in try/catch so email failure doesn't block registration
+    try {
+      await withTimeout(emailHelper.sendWelcomeEmail(user.email, user.firstName), 5000, 'welcome email');
+    } catch (err) {
+      logger.error(`Failed to send welcome email to ${user.email}: ${err.message}`);
+    }
 
     await this._logSecurityEvent(user._id, email, 'REGISTER_SUCCESS', 'Registration completed successfully.', clientInfo);
 
@@ -337,7 +404,7 @@ class AuthService {
   // Login: Step 1 (Credentials Verification & OTP Trigger)
   async login(email, password, clientInfo = {}) {
     const user = await User.findOne({ email: email.toLowerCase(), isDeleted: { $ne: true } }).select('+password');
-    
+
     if (!user) {
       throw new UnauthorizedError('This email is not registered with us. Please sign up to create an account.');
     }
@@ -350,16 +417,20 @@ class AuthService {
     const isPasswordMatch = await bcrypt.compare(password, user.password);
     if (!isPasswordMatch) {
       user.loginAttempts += 1;
-      
+
       if (user.loginAttempts >= 5) {
         user.isBlocked = true;
         user.status = 'suspended';
         await user.save();
         await this._logSecurityEvent(user._id, email, 'ACCOUNT_BLOCKED', 'Account suspended due to too many failed login attempts.', clientInfo);
-        await emailHelper.sendSecurityAlertEmail(user.email, 'Account suspended due to suspicious failed login attempts.', clientInfo);
+        try {
+          await withTimeout(emailHelper.sendSecurityAlertEmail(user.email, 'Account suspended due to suspicious failed login attempts.', clientInfo), 5000, 'security alert email');
+        } catch (err) {
+          logger.error(`Failed to send security alert email: ${err.message}`);
+        }
         throw new ForbiddenError('Your account has been suspended due to too many failed login attempts.');
       }
-      
+
       await user.save();
       await this._logSecurityEvent(user._id, email, 'LOGIN_FAILED', 'Failed password attempt.', clientInfo);
       throw new UnauthorizedError('Incorrect password. Please try again.');
@@ -379,20 +450,32 @@ class AuthService {
 
     const { cacheService } = require('../../../cache/cache.service');
     const otpKey = `otp:${email.toLowerCase()}:login`;
-    await cacheService.set(otpKey, {
-      email: email.toLowerCase(),
-      otp: hashedOtp,
-      purpose: 'login',
-      attempts: 0,
-      verified: false
-    }, 600);
+    try {
+      await withTimeout(cacheService.set(otpKey, {
+        email: email.toLowerCase(),
+        otp: hashedOtp,
+        purpose: 'login',
+        attempts: 0,
+        verified: false
+      }, 600), 3000, 'OTP cache set');
+    } catch (err) {
+      logger.warn(`Redis OTP cache set failed during login: ${err.message}`);
+    }
 
     const cooldownKey = `otp_cooldown:${email.toLowerCase()}:login`;
-    await cacheService.set(cooldownKey, { createdAt: Date.now() }, 60);
+    try {
+      await withTimeout(cacheService.set(cooldownKey, { createdAt: Date.now() }, 60), 3000, 'OTP cooldown set');
+    } catch (err) {
+      logger.warn(`Redis OTP cooldown set failed during login: ${err.message}`);
+    }
 
-    // Send Email OTP
+    // Send Email OTP — wrapped in try/catch so email failure doesn't block login
     logger.info(`[DEV ONLY] Login OTP for ${user.email} is: ${otpCode}`);
-    await emailHelper.sendLoginOtp(user.email, otpCode, clientInfo);
+    try {
+      await withTimeout(emailHelper.sendLoginOtp(user.email, otpCode, clientInfo), 5000, 'login OTP email');
+    } catch (err) {
+      logger.error(`Failed to send login OTP email to ${user.email}: ${err.message}`);
+    }
 
     await this._logSecurityEvent(user._id, email, 'LOGIN_OTP_TRIGGERED', 'Credentials valid. Login 2FA OTP sent.', clientInfo);
 
@@ -419,20 +502,33 @@ class AuthService {
 
     const { cacheService } = require('../../../cache/cache.service');
     const otpKey = `otp:${email.toLowerCase()}:login`;
-    await cacheService.set(otpKey, {
-      email: email.toLowerCase(),
-      otp: hashedOtp,
-      purpose: 'login',
-      attempts: 0,
-      verified: false
-    }, 600);
+    try {
+      await withTimeout(cacheService.set(otpKey, {
+        email: email.toLowerCase(),
+        otp: hashedOtp,
+        purpose: 'login',
+        attempts: 0,
+        verified: false
+      }, 600), 3000, 'OTP cache set');
+    } catch (err) {
+      logger.warn(`Redis OTP cache set failed during resend: ${err.message}`);
+    }
 
     const cooldownKey = `otp_cooldown:${email.toLowerCase()}:login`;
-    await cacheService.set(cooldownKey, { createdAt: Date.now() }, 60);
+    try {
+      await withTimeout(cacheService.set(cooldownKey, { createdAt: Date.now() }, 60), 3000, 'OTP cooldown set');
+    } catch (err) {
+      logger.warn(`Redis OTP cooldown set failed during resend: ${err.message}`);
+    }
 
-    await emailHelper.sendLoginOtp(user.email, otpCode, clientInfo);
+    try {
+      await withTimeout(emailHelper.sendLoginOtp(user.email, otpCode, clientInfo), 5000, 'login OTP email');
+    } catch (err) {
+      logger.error(`Failed to send login OTP email to ${user.email}: ${err.message}`);
+    }
+
     await this._logSecurityEvent(user._id, email, 'LOGIN_OTP_RESENT', 'Login OTP resent.', clientInfo);
-    
+
     return { success: true };
   }
 
@@ -445,7 +541,13 @@ class AuthService {
 
     const { cacheService } = require('../../../cache/cache.service');
     const otpKey = `otp:${email.toLowerCase()}:login`;
-    const otpRecord = await cacheService.get(otpKey);
+    let otpRecord;
+    try {
+      otpRecord = await withTimeout(cacheService.get(otpKey), 3000, 'OTP cache get');
+    } catch (err) {
+      logger.warn(`Redis OTP cache get failed during verification: ${err.message}`);
+      throw new AppError('Unable to verify OTP. Please try again.', 500, 'REDIS_ERROR');
+    }
 
     if (!otpRecord || otpRecord.verified) {
       throw new AppError('No active OTP found. Please request a new one.', 400, 'INVALID_OTP');
@@ -458,11 +560,19 @@ class AuthService {
     const isOtpMatch = await bcrypt.compare(otpCode, otpRecord.otp);
     if (!isOtpMatch) {
       otpRecord.attempts += 1;
-      await cacheService.set(otpKey, otpRecord, 600);
+      try {
+        await withTimeout(cacheService.set(otpKey, otpRecord, 600), 3000, 'OTP cache update');
+      } catch (err) {
+        logger.warn(`Redis OTP cache update failed: ${err.message}`);
+      }
       throw new AppError('Invalid verification code. Please try again.', 400, 'INVALID_OTP');
     }
 
-    await cacheService.del(otpKey);
+    try {
+      await withTimeout(cacheService.del(otpKey), 3000, 'OTP cache delete');
+    } catch (err) {
+      logger.warn(`Redis OTP cache delete failed: ${err.message}`);
+    }
 
     // Reset login attempts & Set last login info
     user.loginAttempts = 0;
@@ -489,11 +599,15 @@ class AuthService {
       active: true
     });
 
-    await cacheService.set(`session:${session._id}`, session, 2592000);
+    try {
+      await withTimeout(cacheService.set(`session:${session._id}`, session, 2592000), 3000, 'session cache set');
+    } catch (err) {
+      logger.warn(`Redis session cache set failed: ${err.message}`);
+    }
 
     const accessToken = signAccessToken({ userId: user._id, role: user.role, sessionId: session._id });
     const refreshTokenValue = signRefreshToken({ userId: user._id, sessionId: session._id });
-    
+
     // Set token expiration (exactly 30 days)
     const refreshExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
@@ -533,18 +647,31 @@ class AuthService {
 
     const { cacheService } = require('../../../cache/cache.service');
     const otpKey = `otp:${email.toLowerCase()}:forgot_password`;
-    await cacheService.set(otpKey, {
-      email: email.toLowerCase(),
-      otp: hashedOtp,
-      purpose: 'forgot_password',
-      attempts: 0,
-      verified: false
-    }, 600);
+    try {
+      await withTimeout(cacheService.set(otpKey, {
+        email: email.toLowerCase(),
+        otp: hashedOtp,
+        purpose: 'forgot_password',
+        attempts: 0,
+        verified: false
+      }, 600), 3000, 'OTP cache set');
+    } catch (err) {
+      logger.warn(`Redis OTP cache set failed during forgot password: ${err.message}`);
+    }
 
     const cooldownKey = `otp_cooldown:${email.toLowerCase()}:forgot_password`;
-    await cacheService.set(cooldownKey, { createdAt: Date.now() }, 60);
+    try {
+      await withTimeout(cacheService.set(cooldownKey, { createdAt: Date.now() }, 60), 3000, 'OTP cooldown set');
+    } catch (err) {
+      logger.warn(`Redis OTP cooldown set failed during forgot password: ${err.message}`);
+    }
 
-    await emailHelper.sendForgotPasswordOtp(user.email, otpCode);
+    try {
+      await withTimeout(emailHelper.sendForgotPasswordOtp(user.email, otpCode), 5000, 'forgot password OTP email');
+    } catch (err) {
+      logger.error(`Failed to send forgot password OTP email to ${user.email}: ${err.message}`);
+    }
+
     await this._logSecurityEvent(user._id, email, 'FORGOT_PASSWORD_REQUEST', 'Forgot password request initialized. Reset OTP sent.', clientInfo);
 
     return { success: true, emailExists: true };
@@ -559,7 +686,13 @@ class AuthService {
 
     const { cacheService } = require('../../../cache/cache.service');
     const otpKey = `otp:${email.toLowerCase()}:forgot_password`;
-    const otpRecord = await cacheService.get(otpKey);
+    let otpRecord;
+    try {
+      otpRecord = await withTimeout(cacheService.get(otpKey), 3000, 'OTP cache get');
+    } catch (err) {
+      logger.warn(`Redis OTP cache get failed during reset: ${err.message}`);
+      throw new AppError('Unable to verify OTP. Please try again.', 500, 'REDIS_ERROR');
+    }
 
     if (!otpRecord || otpRecord.verified) {
       throw new AppError('No active OTP found. Please request a new one.', 400, 'INVALID_OTP');
@@ -572,11 +705,19 @@ class AuthService {
     const isOtpMatch = await bcrypt.compare(otpCode, otpRecord.otp);
     if (!isOtpMatch) {
       otpRecord.attempts += 1;
-      await cacheService.set(otpKey, otpRecord, 600);
+      try {
+        await withTimeout(cacheService.set(otpKey, otpRecord, 600), 3000, 'OTP cache update');
+      } catch (err) {
+        logger.warn(`Redis OTP cache update failed: ${err.message}`);
+      }
       throw new AppError('Invalid verification code. Please try again.', 400, 'INVALID_OTP');
     }
 
-    await cacheService.del(otpKey);
+    try {
+      await withTimeout(cacheService.del(otpKey), 3000, 'OTP cache delete');
+    } catch (err) {
+      logger.warn(`Redis OTP cache delete failed: ${err.message}`);
+    }
 
     // Hash and update password
     const salt = await bcrypt.genSalt(12);
@@ -595,10 +736,19 @@ class AuthService {
 
     // Clear sessions from cache
     for (const s of activeSessions) {
-      await cacheService.del(`session:${s._id}`);
+      try {
+        await withTimeout(cacheService.del(`session:${s._id}`), 3000, 'session cache delete');
+      } catch (err) {
+        logger.warn(`Redis session cache delete failed: ${err.message}`);
+      }
     }
 
-    await emailHelper.sendPasswordChangedEmail(user.email);
+    try {
+      await withTimeout(emailHelper.sendPasswordChangedEmail(user.email), 5000, 'password changed email');
+    } catch (err) {
+      logger.error(`Failed to send password changed email to ${user.email}: ${err.message}`);
+    }
+
     await this._logSecurityEvent(user._id, email, 'PASSWORD_RESET_SUCCESS', 'Password successfully reset.', clientInfo);
 
     return { success: true };
@@ -615,7 +765,7 @@ class AuthService {
 
       // Look up token in DB
       const storedToken = await RefreshToken.findOne({ token: oldRefreshTokenVal });
-      
+
       // BREACH DETECTION: Refresh Token Reuse Detection
       if (!storedToken) {
         // Someone has already rotated this token! Revoke everything for security
@@ -624,24 +774,32 @@ class AuthService {
         await Session.updateMany({ userId: decoded.userId, active: true }, { active: false, logoutTime: new Date() });
         const { cacheService } = require('../../../cache/cache.service');
         for (const s of activeSessions) {
-          await cacheService.del(`session:${s._id}`);
+          try {
+            await withTimeout(cacheService.del(`session:${s._id}`), 3000, 'session cache delete');
+          } catch (err) {
+            logger.warn(`Redis session cache delete failed: ${err.message}`);
+          }
         }
-        
+
         await this._logSecurityEvent(
-          decoded.userId, 
-          null, 
-          'BREACH_DETECTION', 
-          'Reused refresh token presented. Revoked all tokens for user.', 
+          decoded.userId,
+          null,
+          'BREACH_DETECTION',
+          'Reused refresh token presented. Revoked all tokens for user.',
           clientInfo
         );
-        
+
         const user = await User.findById(decoded.userId);
         if (user) {
-          await emailHelper.sendSecurityAlertEmail(
-            user.email, 
-            'A suspicious token reuse attempt was detected. All sessions on your account have been closed.',
-            clientInfo
-          );
+          try {
+            await withTimeout(emailHelper.sendSecurityAlertEmail(
+              user.email,
+              'A suspicious token reuse attempt was detected. All sessions on your account have been closed.',
+              clientInfo
+            ), 5000, 'security alert email');
+          } catch (err) {
+            logger.error(`Failed to send security alert email: ${err.message}`);
+          }
         }
 
         throw new UnauthorizedError('Security warning: Session expired or reused. Please log in again.');
@@ -667,7 +825,11 @@ class AuthService {
       if (!session) {
         session = await Session.findById(decoded.sessionId);
         if (session) {
-          await cacheService.set(cacheKey, session, 2592000);
+          try {
+            await withTimeout(cacheService.set(cacheKey, session, 2592000), 3000, 'session cache set');
+          } catch (err) {
+            logger.warn(`Redis session cache set failed: ${err.message}`);
+          }
         }
       }
       if (!session || !session.active) {
@@ -677,7 +839,7 @@ class AuthService {
       // Rotate tokens
       const newAccessToken = signAccessToken({ userId: user._id, role: user.role, sessionId: session._id });
       const newRefreshTokenValue = signRefreshToken({ userId: user._id, sessionId: session._id });
-      
+
       // Update RefreshToken in database
       storedToken.token = newRefreshTokenValue;
       storedToken.expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
@@ -713,7 +875,11 @@ class AuthService {
     if (sessionId) {
       await Session.findByIdAndUpdate(sessionId, { active: false, logoutTime: new Date() });
       const { cacheService } = require('../../../cache/cache.service');
-      await cacheService.del(`session:${sessionId}`);
+      try {
+        await withTimeout(cacheService.del(`session:${sessionId}`), 3000, 'session cache delete');
+      } catch (err) {
+        logger.warn(`Redis session cache delete failed: ${err.message}`);
+      }
     }
 
     await this._logSecurityEvent(userId, null, 'LOGOUT_SUCCESS', 'Logged out from current device.', clientInfo);
@@ -730,7 +896,11 @@ class AuthService {
     await Session.updateMany({ userId, active: true }, { active: false, logoutTime: new Date() });
     const { cacheService } = require('../../../cache/cache.service');
     for (const s of activeSessions) {
-      await cacheService.del(`session:${s._id}`);
+      try {
+        await withTimeout(cacheService.del(`session:${s._id}`), 3000, 'session cache delete');
+      } catch (err) {
+        logger.warn(`Redis session cache delete failed: ${err.message}`);
+      }
     }
 
     await this._logSecurityEvent(userId, null, 'LOGOUT_ALL_SUCCESS', 'Logged out from all devices.', clientInfo);

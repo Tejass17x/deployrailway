@@ -3,7 +3,45 @@ const authDTO = require('../dto/auth.dto');
 const asyncHandler = require('../../../common/middlewares/asyncHandler.middleware');
 const env = require('../../../config/environment');
 const { getClientInfo } = require('../../../common/utils/userAgent.helper');
+const logger = require('../../../common/logger/winston');
 
+// ─── Request Timeout Wrapper ─────────────────────────────────────────────────
+// Wraps an async function with a timeout so that if an external service
+// (Redis, MongoDB, SMTP, etc.) hangs, the request fails fast with a 500
+// instead of hanging indefinitely until the Vercel 10-second timeout.
+const withTimeout = async (promise, ms = 8000, operation = 'operation') => {
+  return await Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Request timeout during ${operation}`)), ms)
+    )
+  ]);
+};
+
+// ─── Safe Service Call Helper ────────────────────────────────────────────────
+// Wraps a service call with timeout + error handling. If the service hangs
+// or throws, it returns a standardized 500 error response.
+const safeServiceCall = async (req, res, operation, serviceFn, clientInfo) => {
+  try {
+    const result = await withTimeout(serviceFn(), 8000, operation);
+    return result;
+  } catch (error) {
+    logger.error(`[${operation} FAILED] ${error.message}`, {
+      email: req.body?.email,
+      requestId: req.id,
+      stack: error.stack
+    });
+
+    // If the error is already an AppError (our custom error), re-throw it
+    // so the error handler middleware can format it properly
+    if (error.statusCode) {
+      throw error;
+    }
+
+    // For timeout or unknown errors, return a generic 500
+    throw new Error(`Service temporarily unavailable. Please try again. (Error: ${error.message})`);
+  }
+};
 
 // Helper to set cookie for refresh token
 const setRefreshTokenCookie = (res, token) => {
@@ -29,14 +67,22 @@ class AuthController {
   // Register User
   register = asyncHandler(async (req, res) => {
     const clientInfo = getClientInfo(req);
-    const result = await authService.register(req.body, clientInfo);
+    const result = await safeServiceCall(
+      req, res, 'register',
+      () => authService.register(req.body, clientInfo),
+      clientInfo
+    );
     return res.success('Registration pending. Email OTP has been sent.', result, 201);
   });
 
   // Resend Registration OTP
   sendRegistrationOtp = asyncHandler(async (req, res) => {
     const clientInfo = getClientInfo(req);
-    await authService.sendRegistrationOtp(req.body.email, clientInfo);
+    await safeServiceCall(
+      req, res, 'sendRegistrationOtp',
+      () => authService.sendRegistrationOtp(req.body.email, clientInfo),
+      clientInfo
+    );
     return res.success('Registration OTP has been resent successfully.', { email: req.body.email });
   });
 
@@ -44,12 +90,16 @@ class AuthController {
   verifyRegistrationOtp = asyncHandler(async (req, res) => {
     const clientInfo = getClientInfo(req);
     const { email, otp } = req.body;
-    const { user, profile, accessToken, refreshToken } = await authService.verifyRegistrationOtp(email, otp, clientInfo);
-    
+    const { user, profile, accessToken, refreshToken } = await safeServiceCall(
+      req, res, 'verifyRegistrationOtp',
+      () => authService.verifyRegistrationOtp(email, otp, clientInfo),
+      clientInfo
+    );
+
     setRefreshTokenCookie(res, refreshToken);
-    
+
     return res.success(
-      'Email verified. Registration completed successfully.', 
+      'Email verified. Registration completed successfully.',
       authDTO.formatAuthResponse(user, profile, accessToken)
     );
   });
@@ -58,15 +108,23 @@ class AuthController {
   login = asyncHandler(async (req, res) => {
     const clientInfo = getClientInfo(req);
     const { email, password } = req.body;
-    const result = await authService.login(email, password, clientInfo);
-    
+    const result = await safeServiceCall(
+      req, res, 'login',
+      () => authService.login(email, password, clientInfo),
+      clientInfo
+    );
+
     return res.success('Credentials verified. OTP sent for verification.', result);
   });
 
   // Resend Login OTP
   sendLoginOtp = asyncHandler(async (req, res) => {
     const clientInfo = getClientInfo(req);
-    await authService.sendLoginOtp(req.body.email, clientInfo);
+    await safeServiceCall(
+      req, res, 'sendLoginOtp',
+      () => authService.sendLoginOtp(req.body.email, clientInfo),
+      clientInfo
+    );
     return res.success('Login OTP has been resent successfully.', { email: req.body.email });
   });
 
@@ -74,12 +132,16 @@ class AuthController {
   verifyLoginOtp = asyncHandler(async (req, res) => {
     const clientInfo = getClientInfo(req);
     const { email, otp, rememberMe } = req.body;
-    const { user, profile, accessToken, refreshToken } = await authService.verifyLoginOtp(email, otp, rememberMe, clientInfo);
+    const { user, profile, accessToken, refreshToken } = await safeServiceCall(
+      req, res, 'verifyLoginOtp',
+      () => authService.verifyLoginOtp(email, otp, rememberMe, clientInfo),
+      clientInfo
+    );
 
     setRefreshTokenCookie(res, refreshToken);
 
     return res.success(
-      'Login verified successfully.', 
+      'Login verified successfully.',
       authDTO.formatAuthResponse(user, profile, accessToken)
     );
   });
@@ -87,7 +149,11 @@ class AuthController {
   // Forgot Password
   forgotPassword = asyncHandler(async (req, res) => {
     const clientInfo = getClientInfo(req);
-    const result = await authService.forgotPassword(req.body.email, clientInfo);
+    const result = await safeServiceCall(
+      req, res, 'forgotPassword',
+      () => authService.forgotPassword(req.body.email, clientInfo),
+      clientInfo
+    );
     return res.success(result.message || 'If registered, password reset OTP has been sent.', { email: req.body.email, emailExists: result.emailExists });
   });
 
@@ -95,7 +161,11 @@ class AuthController {
   resetPassword = asyncHandler(async (req, res) => {
     const clientInfo = getClientInfo(req);
     const { email, otp, password } = req.body;
-    await authService.resetPassword(email, otp, password, clientInfo);
+    await safeServiceCall(
+      req, res, 'resetPassword',
+      () => authService.resetPassword(email, otp, password, clientInfo),
+      clientInfo
+    );
     return res.success('Password reset successfully. You can now log in.');
   });
 
@@ -103,14 +173,22 @@ class AuthController {
   changePassword = asyncHandler(async (req, res) => {
     const clientInfo = getClientInfo(req);
     const { currentPassword, newPassword } = req.body;
-    await authService.changePassword(req.user._id, currentPassword, newPassword, clientInfo);
+    await safeServiceCall(
+      req, res, 'changePassword',
+      () => authService.changePassword(req.user._id, currentPassword, newPassword, clientInfo),
+      clientInfo
+    );
     return res.success('Password changed successfully.');
   });
 
   // Deactivate Account
   deactivate = asyncHandler(async (req, res) => {
     const clientInfo = getClientInfo(req);
-    await authService.deactivate(req.user._id, clientInfo);
+    await safeServiceCall(
+      req, res, 'deactivate',
+      () => authService.deactivate(req.user._id, clientInfo),
+      clientInfo
+    );
     clearRefreshTokenCookie(res);
     return res.success('Account deactivated successfully.');
   });
@@ -119,7 +197,11 @@ class AuthController {
   refreshAccessToken = asyncHandler(async (req, res) => {
     const clientInfo = getClientInfo(req);
     const oldRefreshToken = req.cookies.refreshToken || req.body.refreshToken;
-    const { accessToken, refreshToken } = await authService.refreshAccessToken(oldRefreshToken, clientInfo);
+    const { accessToken, refreshToken } = await safeServiceCall(
+      req, res, 'refreshAccessToken',
+      () => authService.refreshAccessToken(oldRefreshToken, clientInfo),
+      clientInfo
+    );
 
     setRefreshTokenCookie(res, refreshToken);
 
@@ -130,7 +212,11 @@ class AuthController {
   logout = asyncHandler(async (req, res) => {
     const clientInfo = getClientInfo(req);
     const refreshToken = req.cookies.refreshToken || req.body.refreshToken;
-    await authService.logout(refreshToken, clientInfo);
+    await safeServiceCall(
+      req, res, 'logout',
+      () => authService.logout(refreshToken, clientInfo),
+      clientInfo
+    );
 
     clearRefreshTokenCookie(res);
 
@@ -140,7 +226,11 @@ class AuthController {
   // Logout all sessions
   logoutAll = asyncHandler(async (req, res) => {
     const clientInfo = getClientInfo(req);
-    await authService.logoutAll(req.user._id, clientInfo);
+    await safeServiceCall(
+      req, res, 'logoutAll',
+      () => authService.logoutAll(req.user._id, clientInfo),
+      clientInfo
+    );
 
     clearRefreshTokenCookie(res);
 
@@ -149,7 +239,11 @@ class AuthController {
 
   // Get current authenticated user profile
   getMe = asyncHandler(async (req, res) => {
-    const { user, profile } = await authService.getCurrentUser(req.user._id);
+    const { user, profile } = await safeServiceCall(
+      req, res, 'getMe',
+      () => authService.getCurrentUser(req.user._id),
+      {}
+    );
     return res.success('Current user profile retrieved successfully.', {
       user: authDTO.formatUser(user),
       profile: authDTO.formatProfile(profile)
@@ -161,11 +255,23 @@ class AuthController {
     const clientInfo = getClientInfo(req);
     const { email, purpose = 'login' } = req.body;
     if (purpose === 'registration') {
-      await authService.sendRegistrationOtp(email, clientInfo);
+      await safeServiceCall(
+        req, res, 'sendRegistrationOtp',
+        () => authService.sendRegistrationOtp(email, clientInfo),
+        clientInfo
+      );
     } else if (purpose === 'forgot_password') {
-      await authService.forgotPassword(email, clientInfo);
+      await safeServiceCall(
+        req, res, 'forgotPassword',
+        () => authService.forgotPassword(email, clientInfo),
+        clientInfo
+      );
     } else {
-      await authService.sendLoginOtp(email, clientInfo);
+      await safeServiceCall(
+        req, res, 'sendLoginOtp',
+        () => authService.sendLoginOtp(email, clientInfo),
+        clientInfo
+      );
     }
     return res.success(`OTP code sent successfully for ${purpose}.`, { email, purpose });
   });
@@ -176,14 +282,26 @@ class AuthController {
     const { email, otp, purpose = 'login', rememberMe = false } = req.body;
     let result;
     if (purpose === 'registration') {
-      const { user, profile, accessToken, refreshToken } = await authService.verifyRegistrationOtp(email, otp, clientInfo);
+      const { user, profile, accessToken, refreshToken } = await safeServiceCall(
+        req, res, 'verifyRegistrationOtp',
+        () => authService.verifyRegistrationOtp(email, otp, clientInfo),
+        clientInfo
+      );
       setRefreshTokenCookie(res, refreshToken);
       result = authDTO.formatAuthResponse(user, profile, accessToken);
     } else if (purpose === 'forgot_password') {
-      await authService.resetPassword(email, otp, req.body.password, clientInfo);
+      await safeServiceCall(
+        req, res, 'resetPassword',
+        () => authService.resetPassword(email, otp, req.body.password, clientInfo),
+        clientInfo
+      );
       return res.success('Password reset successfully. You can now log in.');
     } else {
-      const { user, profile, accessToken, refreshToken } = await authService.verifyLoginOtp(email, otp, rememberMe, clientInfo);
+      const { user, profile, accessToken, refreshToken } = await safeServiceCall(
+        req, res, 'verifyLoginOtp',
+        () => authService.verifyLoginOtp(email, otp, rememberMe, clientInfo),
+        clientInfo
+      );
       setRefreshTokenCookie(res, refreshToken);
       result = authDTO.formatAuthResponse(user, profile, accessToken);
     }

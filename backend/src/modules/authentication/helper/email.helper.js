@@ -8,7 +8,11 @@ const transporter = nodemailer.createTransport({
   auth: {
     user: env.email.user,
     pass: env.email.pass
-  }
+  },
+  // Fail fast — don't hang indefinitely on SMTP connection
+  connectionTimeout: 5000,
+  // Timeout for sending the email itself
+  greetingTimeout: 5000
 });
 
 // Update these to match your real branding / support details
@@ -277,10 +281,20 @@ const sendEmail = async (to, subject, html) => {
   // 1. Try the BullMQ queue path (requires Redis). In production with
   //    Redis this is preferred because the dedicated worker retries on
   //    failure and doesn't block the HTTP request.
-  const jobId = await queue.enqueue('email', { to, subject, html, text });
-  if (jobId) {
-    logger.info(`[EMAIL CLIENT] Enqueued email job ${jobId} to ${to} for subject: ${subject}`);
-    return true;
+  //    Wrap in a timeout so a degraded Redis doesn't hang the request.
+  try {
+    const jobId = await Promise.race([
+      queue.enqueue('email', { to, subject, html, text }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Queue enqueue timeout')), 3000)
+      )
+    ]);
+    if (jobId) {
+      logger.info(`[EMAIL CLIENT] Enqueued email job ${jobId} to ${to} for subject: ${subject}`);
+      return true;
+    }
+  } catch (err) {
+    logger.warn(`[EMAIL CLIENT] Queue enqueue failed for ${to}: ${err.message}. Falling back to direct SMTP.`);
   }
 
   // 2. Queue unavailable (Redis down or not configured) — send directly.
@@ -303,14 +317,6 @@ const sendEmail = async (to, subject, html) => {
   }
 
   try {
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: env.email.user,
-        pass: env.email.pass
-      }
-    });
-
     const mailOptions = {
       from: `"Research Connect" <${env.email.user}>`,
       to,
@@ -319,7 +325,12 @@ const sendEmail = async (to, subject, html) => {
       text
     };
 
-    const info = await transporter.sendMail(mailOptions);
+    const info = await Promise.race([
+      transporter.sendMail(mailOptions),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('SMTP send timeout')), 5000)
+      )
+    ]);
     logger.info(`[EMAIL CLIENT] Direct SMTP sent to ${to}: ${info.messageId}`);
     return true;
   } catch (error) {

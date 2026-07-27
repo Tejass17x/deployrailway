@@ -1,5 +1,17 @@
 const redisClient = require('../config/redis');
 
+// ─── Timeout Wrapper ─────────────────────────────────────────────────────────
+// Wraps a promise with a timeout so that if Redis hangs, the operation
+// fails fast instead of blocking the request indefinitely.
+const withTimeout = async (promise, ms = 3000, operation = 'cache operation') => {
+  return await Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout during ${operation}`)), ms)
+    )
+  ]);
+};
+
 class CacheService {
   constructor() {
     this.cache = new Map();
@@ -9,7 +21,7 @@ class CacheService {
   async get(key) {
     if (this.redisClient && this.redisClient.isOpen && this.redisClient.isReady) {
       try {
-        const val = await this.redisClient.get(key);
+        const val = await withTimeout(this.redisClient.get(key), 3000, 'cache get');
         return val ? JSON.parse(val) : null;
       } catch (err) {
         console.error('Redis cache get error:', err);
@@ -27,7 +39,7 @@ class CacheService {
   async set(key, value, ttlSeconds = 300) {
     if (this.redisClient && this.redisClient.isOpen && this.redisClient.isReady) {
       try {
-        await this.redisClient.set(key, JSON.stringify(value), { EX: ttlSeconds });
+        await withTimeout(this.redisClient.set(key, JSON.stringify(value), { EX: ttlSeconds }), 3000, 'cache set');
         return true;
       } catch (err) {
         console.error('Redis cache set error:', err);
@@ -41,7 +53,7 @@ class CacheService {
   async del(key) {
     if (this.redisClient && this.redisClient.isOpen && this.redisClient.isReady) {
       try {
-        await this.redisClient.del(key);
+        await withTimeout(this.redisClient.del(key), 3000, 'cache del');
         return true;
       } catch (err) {
         console.error('Redis cache del error:', err);
@@ -53,7 +65,7 @@ class CacheService {
   async flush() {
     if (this.redisClient && this.redisClient.isOpen && this.redisClient.isReady) {
       try {
-        await this.redisClient.flushAll();
+        await withTimeout(this.redisClient.flushAll(), 3000, 'cache flush');
         return true;
       } catch (err) {
         console.error('Redis cache flush error:', err);
@@ -68,11 +80,11 @@ class CacheService {
       try {
         let cursor = '0';
         do {
-          const reply = await this.redisClient.scan(cursor, { MATCH: pattern, COUNT: 100 });
+          const reply = await withTimeout(this.redisClient.scan(cursor, { MATCH: pattern, COUNT: 100 }), 3000, 'cache scan');
           cursor = reply.cursor;
           const keys = reply.keys || [];
           if (keys.length > 0) {
-            await this.redisClient.del(keys);
+            await withTimeout(this.redisClient.del(keys), 3000, 'cache del pattern');
           }
         } while (cursor !== '0' && cursor !== 0);
         return true;

@@ -3,11 +3,20 @@ const IORedis = require('ioredis');
 const logger = require('../logger/winston');
 
 // Redis URL fallback to localhost
-const REDIS_URI = process.env.REDIS_URL || 'redis://localhost:6379';
+const rawUri = process.env.REDIS_URL || 'redis://localhost:6379';
 
 // Upstash requires TLS for all connections, even on redis:// scheme.
-const isUpstash = REDIS_URI.includes('upstash.io');
+const isUpstash = rawUri.includes('upstash.io');
 const useTls = isUpstash || process.env.REDIS_TLS === 'true';
+
+// Force rediss:// protocol if TLS is required and the URL uses redis://
+let REDIS_URI;
+if (useTls && rawUri.startsWith('redis://')) {
+  REDIS_URI = rawUri.replace(/^redis:\/\//, 'rediss://');
+  logger.info(`[BULLMQ] TLS enabled — forcing rediss:// protocol for connection.`);
+} else {
+  REDIS_URI = rawUri;
+}
 
 // ioredis connection instance with graceful fallback
 let connection = null;
@@ -20,6 +29,9 @@ try {
   const options = {
     maxRetriesPerRequest: null, // Required by BullMQ
     enableOfflineQueue: false, // Don't queue commands when disconnected
+    // Fail fast — don't hang indefinitely on connection attempts
+    connectTimeout: 5000,
+    // TLS is auto-detected from the rediss:// scheme
     tls: useTls ? {} : undefined,
     retryStrategy: (times) => {
       // Allow up to 5 retries with exponential backoff, then stop
@@ -81,7 +93,13 @@ class BullMQAdapter {
         });
       }
 
-      const job = await queues[queueName].add('job', jobData);
+      // Wrap enqueue in a timeout so a degraded Redis doesn't hang the request
+      const job = await Promise.race([
+        queues[queueName].add('job', jobData),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Queue enqueue timeout')), 3000)
+        )
+      ]);
       logger.info(`[BULLMQ] Job ${job.id} successfully enqueued to ${queueName}`);
       return job.id;
     } catch (err) {
