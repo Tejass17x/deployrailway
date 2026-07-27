@@ -1,3 +1,4 @@
+const dns = require('dns');
 const nodemailer = require('nodemailer');
 const env = require('../../../config/environment');
 const logger = require('../../../common/logger/winston');
@@ -12,7 +13,13 @@ const transporter = nodemailer.createTransport({
     user: env.email.user,
     pass: env.email.pass
   },
-  family: 4,
+  // Force IPv4 at the socket level — Node.js v18+ ignores family: 4 when
+  // the system DNS resolver is IPv6-native (Railway uses fd12::10).
+  lookup: (hostname, options, callback) => {
+    dns.lookup(hostname, { family: 4 }, (err, address, family) => {
+      callback(err, address, family);
+    });
+  },
   // Fail fast — don't hang indefinitely on SMTP connection
   connectionTimeout: 5000,
   // Timeout for sending the email itself

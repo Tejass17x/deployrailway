@@ -1,3 +1,4 @@
+const dns = require('dns');
 const queue = require('../common/queue/queue');
 const logger = require('../common/logger/winston');
 const nodemailer = require('nodemailer');
@@ -37,7 +38,13 @@ const emailWorkerHandler = async (job) => {
       user: env.email.user,
       pass: env.email.pass,
     },
-    family: 4,
+    // Force IPv4 at the socket level — Node.js v18+ ignores family: 4 when
+    // the system DNS resolver is IPv6-native (Railway uses fd12::10).
+    lookup: (hostname, options, callback) => {
+      dns.lookup(hostname, { family: 4 }, (err, address, family) => {
+        callback(err, address, family);
+      });
+    },
     connectionTimeout: 8000,
     greetingTimeout: 8000,
     socketTimeout: 15000,
