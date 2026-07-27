@@ -1,3 +1,4 @@
+const dns = require('dns');
 const queue = require('../common/queue/queue');
 const logger = require('../common/logger/winston');
 const nodemailer = require('nodemailer');
@@ -7,9 +8,18 @@ const env = require('../config/environment');
  * 1. Email Worker Handler
  * Processes transactional and notification emails via Gmail SMTP.
  *
- * Railway cannot route IPv6 → Gmail SMTP, so the transporter forces IPv4
- * (family: 4) and all timeouts are set tight so a slow/broken connection
- * fails fast rather than hanging the worker indefinitely.
+ * Railway's network:
+ *   1. Cannot route IPv6 to smtp.gmail.com (ENETUNREACH on AAAA records)
+ *   2. Blocks outbound port 465 (TCP SYN gets no response → timeout)
+ *
+ * Fixes applied:
+ *   - Port 587 with STARTTLS instead of port 465 SMTPS (587 is the standard
+ *     submission port and is rarely blocked by cloud providers).
+ *   - Custom `lookup` function that forces IPv4 at the Node.js socket layer.
+ *     Nodemailer's built-in `family: 4` option is unreliable in Node ≥ 18
+ *     when the system DNS has an IPv6 native resolver.
+ *   - Tight timeouts so a broken connection fails fast instead of hanging
+ *     the BullMQ worker forever.
  */
 const emailWorkerHandler = async (job) => {
   logger.info(`[Email Worker] Processing mail dispatch to ${job.to}`);
@@ -21,13 +31,19 @@ const emailWorkerHandler = async (job) => {
 
   const transporter = nodemailer.createTransport({
     host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
+    // Port 587 (STARTTLS) instead of 465 (SMTPS) — Railway blocks port 465
+    port: 587,
+    secure: false,
+    requireTLS: true,
     auth: {
       user: env.email.user,
       pass: env.email.pass,
     },
-    family: 4,
+    // Custom lookup forces IPv4 at the socket level — nodemailer's family: 4
+    // option is unreliable when the system DNS resolver is IPv6-native.
+    lookup: (hostname, opts, cb) => {
+      dns.lookup(hostname, { ...opts, family: 4 }, cb);
+    },
     // Fail fast — don't let a slow SMTP handshake hang the worker
     connectionTimeout: 8000,
     greetingTimeout: 8000,
