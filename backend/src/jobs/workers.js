@@ -1,4 +1,4 @@
-const dns = require('dns');
+const { resolve4 } = require('dns').promises;
 const queue = require('../common/queue/queue');
 const logger = require('../common/logger/winston');
 const nodemailer = require('nodemailer');
@@ -15,9 +15,13 @@ const env = require('../config/environment');
  * Fixes applied:
  *   - Port 587 with STARTTLS instead of port 465 SMTPS (587 is the standard
  *     submission port and is rarely blocked by cloud providers).
- *   - Custom `lookup` function that forces IPv4 at the Node.js socket layer.
- *     Nodemailer's built-in `family: 4` option is unreliable in Node ≥ 18
- *     when the system DNS has an IPv6 native resolver.
+ *   - Manually resolves smtp.gmail.com to a raw IPv4 address via
+ *     dns.resolve4() BEFORE creating the transport.  Nodemailer's internal
+ *     DNS (including family: 4 and the lookup option) is unreliable when
+ *     the system resolver is IPv6-native — passing the IP directly as
+ *     host bypasses its DNS completely.
+ *   - tls.servername set to smtp.gmail.com so the TLS handshake uses the
+ *     correct hostname for certificate validation.
  *   - Tight timeouts so a broken connection fails fast instead of hanging
  *     the BullMQ worker forever.
  */
@@ -29,9 +33,22 @@ const emailWorkerHandler = async (job) => {
     return;
   }
 
+  // Resolve smtp.gmail.com to a raw IPv4 address.
+  // Railway's DNS is IPv6-native (fd12::10) and returns AAAA records
+  // that are unreachable.  We resolve4() to get only A records.
+  let smtpHost = 'smtp.gmail.com';
+  try {
+    const [ipv4] = await resolve4('smtp.gmail.com');
+    smtpHost = ipv4;
+    logger.info(`[Email Worker] Resolved smtp.gmail.com → ${ipv4} (IPv4)`);
+  } catch (dnsErr) {
+    logger.warn(`[Email Worker] DNS resolve4 failed: ${dnsErr.message}. Using hostname directly.`);
+  }
+
   const transporter = nodemailer.createTransport({
-    host: 'smtp.gmail.com',
-    // Port 587 (STARTTLS) instead of 465 (SMTPS) — Railway blocks port 465
+    // Use the raw IPv4 address as host to completely bypass nodemailer's
+    // DNS resolution — nothing between us and Gmail can pick IPv6.
+    host: smtpHost,
     port: 587,
     secure: false,
     requireTLS: true,
@@ -39,12 +56,10 @@ const emailWorkerHandler = async (job) => {
       user: env.email.user,
       pass: env.email.pass,
     },
-    // Custom lookup forces IPv4 at the socket level — nodemailer's family: 4
-    // option is unreliable when the system DNS resolver is IPv6-native.
-    lookup: (hostname, opts, cb) => {
-      dns.lookup(hostname, { ...opts, family: 4 }, cb);
+    tls: {
+      // SNI hostname so Gmail's TLS certificate validates correctly
+      servername: 'smtp.gmail.com',
     },
-    // Fail fast — don't let a slow SMTP handshake hang the worker
     connectionTimeout: 8000,
     greetingTimeout: 8000,
     socketTimeout: 15000,
