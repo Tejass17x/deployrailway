@@ -18,9 +18,9 @@ const env = require('../config/environment');
  * Fixes applied:
  *   - Port 587 with STARTTLS instead of port 465 SMTPS (587 is the standard
  *     submission port and is rarely blocked by cloud providers).
- *   - family: 4 forces Node.js to resolve smtp.gmail.com to IPv4 only,
- *     preventing the ENETUNREACH errors caused by Railway's IPv6-native
- *     DNS resolver (fd12::10).
+ *   - dns.resolve4() in the lookup callback — queries ONLY A records
+ *     (IPv4), bypassing the system getaddrinfo which returns unreachable
+ *     IPv6 addresses on Railway's IPv6-native DNS (fd12::10).
  *   - Tight timeouts so a broken connection fails fast instead of hanging
  *     the BullMQ worker forever.
  */
@@ -41,11 +41,19 @@ const emailWorkerHandler = async (job) => {
       user: env.email.user,
       pass: env.email.pass,
     },
-    // Force IPv4 at the socket level — Node.js v18+ ignores family: 4 when
-    // the system DNS resolver is IPv6-native (Railway uses fd12::10).
+    // Force IPv4 using dns.resolve4 — queries ONLY A records, completely
+    // bypassing the system getaddrinfo which returns unreachable IPv6
+    // addresses on Railway's IPv6-native DNS (fd12::10).
     lookup: (hostname, options, callback) => {
-      dns.lookup(hostname, { family: 4 }, (err, address, family) => {
-        callback(err, address, family);
+      dns.resolve4(hostname, (err, addresses) => {
+        if (err) {
+          return callback(err);
+        }
+        if (!addresses || addresses.length === 0) {
+          return callback(new Error(`No IPv4 address found for ${hostname}`));
+        }
+        // Pass the first explicit IPv4 address back to Nodemailer
+        callback(null, addresses[0], 4);
       });
     },
     connectionTimeout: 8000,

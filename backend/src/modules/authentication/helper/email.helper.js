@@ -16,11 +16,19 @@ const transporter = nodemailer.createTransport({
     user: env.email.user,
     pass: env.email.pass
   },
-  // Force IPv4 at the socket level — Node.js v18+ ignores family: 4 when
-  // the system DNS resolver is IPv6-native (Railway uses fd12::10).
+  // Force IPv4 using dns.resolve4 — queries ONLY A records, completely
+  // bypassing the system getaddrinfo which returns unreachable IPv6
+  // addresses on Railway's IPv6-native DNS (fd12::10).
   lookup: (hostname, options, callback) => {
-    dns.lookup(hostname, { family: 4 }, (err, address, family) => {
-      callback(err, address, family);
+    dns.resolve4(hostname, (err, addresses) => {
+      if (err) {
+        return callback(err);
+      }
+      if (!addresses || addresses.length === 0) {
+        return callback(new Error(`No IPv4 address found for ${hostname}`));
+      }
+      // Pass the first explicit IPv4 address back to Nodemailer
+      callback(null, addresses[0], 4);
     });
   },
   // Fail fast — don't hang indefinitely on SMTP connection
